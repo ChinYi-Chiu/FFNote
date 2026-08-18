@@ -1,0 +1,8 @@
+faster-whisper
+yt-dlp
+requests
+gradio>=4.0.0
+torch
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+nvidia-cuda-nvrtc-cu12
