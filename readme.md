@@ -8,7 +8,7 @@ title: FFNote 使用說明
 ## 安裝步驟
 
 1. 使用者須先安裝ollama，以及自己想使用的模型
-2. 下載FFNote[📥 點我直接下載專案 ZIP](https://github.com/ChinYi-Chiu/FFNote/archive/refs/heads/main.zip")
+2. 下載FFNote[📥 點我直接下載專案 ZIP](https://github.com/ChinYi-Chiu/FFNote/archive/refs/heads/main.zip)
 3. 解壓縮，然後執行setup.bat建置環境
 4. 完成後執行run_gui.bat開啟服務
 
