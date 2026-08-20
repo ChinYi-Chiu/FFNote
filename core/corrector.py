@@ -89,6 +89,8 @@ def call_ollama(
     topic: str = "",
 ) -> Dict[str, Any]:
 
+
+
     user_prompt = f"""
 請校正下面這段 Whisper 語音辨識結果。
 
@@ -128,20 +130,29 @@ def call_ollama(
         },
     }
 
-    response = requests.post(
-        OLLAMA_URL,
-        json=payload,
-        timeout=600,
-    )
+    try:
+        # 連線測試改用較短的 connection timeout (例如 3 秒)
+        response = requests.post(
+            OLLAMA_URL,
+            json=payload,
+            timeout=(3, 600),
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = data["message"]["content"]
+        return json.loads(content)
 
-    response.raise_for_status()
+    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+        # 當 Ollama 未啟動、未安裝或連線失敗時，觸發降級機制
+        warning_msg = "⚠️ 未偵測到運作中的 Ollama 服務，無法執行文字校正與筆記總結。已為您輸出原始 Whisper 逐字稿。"
+        print(f"\n[Warning] {warning_msg} (詳細錯誤: {e})")
 
-    data = response.json()
-
-    content = data["message"]["content"]
-
-    return json.loads(content)
-
+        # 回傳原始文本與提示文字 (可依據你原本的 JSON 格式欄位調整 Key 名稱)
+        return {
+            "corrected_text": text,
+            "notes": warning_msg,
+            "status": "ollama_not_available",
+        }
 
 # ============================================================
 # Correct one chunk
@@ -171,6 +182,9 @@ def correct_chunk(
         [],
     )
 
+    # 取得連線狀態，預設為 success
+    status = result.get("status", "success")
+
     return {
         "chunk_id": chunk["chunk_id"],
         "start": chunk["start"],
@@ -181,6 +195,7 @@ def correct_chunk(
         "corrected_text": corrected_text,
 
         "changes": changes,
+        "status": status,  # 👈 新增此欄位供上層判斷
 
         "segment_ids": chunk.get(
             "segment_ids",
@@ -193,7 +208,6 @@ def correct_chunk(
         ),
     }
 
-
 # ============================================================
 # Correct all chunks
 # ============================================================
@@ -204,8 +218,21 @@ def correct_chunks(
 ) -> List[Dict[str, Any]]:
 
     results = []
+    ollama_available = True  # 標記 Ollama 服務狀態
 
     for i, chunk in enumerate(chunks):
+
+        # ----------------------------------------------------
+        # 若已確定 Ollama 無法連線，直接退回原始資料，不再嘗試 call LLM
+        # ----------------------------------------------------
+        if not ollama_available:
+            results.append({
+                "original_text": chunk.get("text", ""),
+                "corrected_text": chunk.get("text", ""),
+                "changes": [],
+                "status": "ollama_not_available"
+            })
+            continue
 
         print(
             f"\n[LLM] "
@@ -244,6 +271,11 @@ def correct_chunks(
             topic=topic,
         )
 
+        # 檢查是否觸發了降級機制 (Ollama 未啟動/未安裝)
+        if result.get("status") == "ollama_not_available":
+            print("\n[⚠️ 提示] 未偵測到運作中的 Ollama 服務，將跳過後續校正，直接輸出原始逐字稿。")
+            ollama_available = False
+
         results.append(result)
 
         # ----------------------------------------------------
@@ -255,7 +287,7 @@ def correct_chunks(
         )
 
         print(
-            result["original_text"]
+            result.get("original_text", "")
         )
 
         print(
@@ -263,10 +295,10 @@ def correct_chunks(
         )
 
         print(
-            result["corrected_text"]
+            result.get("corrected_text", "")
         )
 
-        if result["changes"]:
+        if result.get("changes"):
 
             print(
                 "\n修改："

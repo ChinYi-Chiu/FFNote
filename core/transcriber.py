@@ -4,6 +4,8 @@ import yt_dlp
 from pathlib import Path
 from faster_whisper import WhisperModel
 from core.config import AUDIO_DIR
+import torch
+
 
 def download_youtube_audio(url: str) -> dict:
     ydl_opts = {
@@ -47,7 +49,15 @@ def convert_to_wav(source_file: Path, video_id: str) -> Path:
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
     return output_wav
 
-def run_transcription(audio_path: Path, model_size="large-v3-turbo", device="cuda", compute_type="float16"):
+
+def run_transcription(audio_path: Path, model_size="large-v3-turbo", device=None, compute_type=None):
+    # 自動判斷是否有支援 CUDA 的 NVIDIA 顯卡
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if compute_type is None:
+        compute_type = "float16" if device == "cuda" else "int8"
+
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
     segments, info = model.transcribe(str(audio_path), vad_filter=True, beam_size=5)
     
