@@ -113,8 +113,6 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-winget install ffmpeg
-
 echo.
 echo ========================================
 echo   [4/4] Setup Complete!
