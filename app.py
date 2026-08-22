@@ -1,13 +1,17 @@
 # app.py
-import gradio as gr
 import json
 from pathlib import Path
+import gradio as gr
 
 from core.config import OUTPUT_DIR
 from core.transcriber import download_youtube_audio, convert_to_wav, run_transcription
 from core.chunker import build_chunks
-from core.corrector import correct_chunks
+from core.corrector import correct_chunks, get_ollama_models
 from core.summarizer import summarize_chunks
+
+# 自動取得本地已安裝的 Ollama 模型
+available_ollama_models = get_ollama_models()
+default_ollama_model = available_ollama_models[0]
 
 def process_pipeline(url_or_file, topic, whisper_model_name, ollama_model_name, progress=gr.Progress()):
     progress(0.0, desc="開始處理...")
@@ -31,9 +35,9 @@ def process_pipeline(url_or_file, topic, whisper_model_name, ollama_model_name, 
     progress(0.5, desc="正在進行語意切片 (Chunking)...")
     chunks = build_chunks(segments)
 
-    # 4. LLM 錯別字校正
+    # 4. LLM 錯別字校正 (將 UI 選取的 ollama_model_name 帶入)
     progress(0.65, desc="正在執行 Ollama 逐字稿校正...")
-    corrected_chunks = correct_chunks(chunks, topic=topic)
+    corrected_chunks = correct_chunks(chunks, topic=topic, model_name=ollama_model_name)
     
     corrected_text_list = []
     diff_list = []
@@ -67,12 +71,13 @@ with gr.Blocks(title="YouTube 語音轉錄與 LLM 筆記專家") as demo:
     
     with gr.Row():
         with gr.Column():
-            input_source = gr.Textbox(label="YouTube 網址 或 本地音訊路徑", placeholder="https://www.youtube.com/watch?v=...")
+            input_source = gr.Textbox(label="YouTube 網址 或 本地音訊路徑", placeholder="[https://www.youtube.com/watch?v=](https://www.youtube.com/watch?v=)...")
             topic_input = gr.Textbox(label="影片主題 / 領域知識 (幫助 LLM 校正專有名詞)", placeholder="例如：交流電路、相量、微控制器")
             
             with gr.Row():
                 whisper_model = gr.Dropdown(["large-v3-turbo", "large-v3", "medium", "small"], value="large-v3-turbo", label="Whisper 模型")
-                ollama_model = gr.Dropdown(["qwen2.5:32b", "qwen2.5:14b", "llama3"], value="qwen2.5:32b", label="Ollama 模型")
+                # 動態載入 Ollama 下拉選單與預設值
+                ollama_model = gr.Dropdown(choices=available_ollama_models, value=default_ollama_model, label="Ollama 模型")
             
             submit_btn = gr.Button("🚀 開始轉錄與筆記生成", variant="primary")
 

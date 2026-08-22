@@ -1,10 +1,17 @@
 # core/summarizer.py
 import json
+import re
 import requests
 from typing import Dict, Any, List
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL = "qwen2.5:32b"
+DEFAULT_MODEL = "qwen3.5:4b"
+
+def clean_json_string(text: str) -> str:
+    """清理 Markdown 的 ```json codeblock"""
+    text = re.sub(r"^```json\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^```\s*", "", text, flags=re.MULTILINE)
+    return text.strip()
 
 CHUNK_NOTE_SYSTEM_PROMPT = r"""
 你是一個嚴謹的技術筆記整理專家。
@@ -13,10 +20,9 @@ CHUNK_NOTE_SYSTEM_PROMPT = r"""
 輸出規則：
 1. 提煉出 2~4 個核心要點（Bullet points）。
 2. 標註出現的關鍵技術名詞或核心概念。
-3. 保持客觀，不要加油添醋。
-4. 輸出格式必須為 JSON，包含 key: "summary_points" (陣列) 與 "keywords" (陣列)。
+3. 輸出格式必須為純 JSON，不可帶任何 Markdown 標籤。
 
-範例 JSON:
+JSON 格式範例:
 {
   "summary_points": ["重點一...", "重點二..."],
   "keywords": ["名詞A", "名詞B"]
@@ -51,7 +57,6 @@ def summarize_single_chunk(
             {"role": "user", "content": user_prompt}
         ],
         "stream": False,
-        "format": "json",
         "options": {"temperature": 0.2}
     }
 
@@ -59,7 +64,8 @@ def summarize_single_chunk(
         res = requests.post(OLLAMA_URL, json=payload, timeout=300)
         res.raise_for_status()
         content = res.json()["message"]["content"]
-        data = json.loads(content)
+        cleaned_content = clean_json_string(content)
+        data = json.loads(cleaned_content)
     except Exception as e:
         data = {"summary_points": [f"筆記生成失敗: {str(e)}"], "keywords": []}
 
@@ -77,9 +83,6 @@ def summarize_chunks(
     topic: str = "",
     model_name: str = DEFAULT_MODEL
 ) -> Dict[str, Any]:
-    """
-    分段提煉筆記，並在最後生成全片總結 (Map-Reduce 模式)
-    """
     chunk_notes = []
     all_points_text = []
 
@@ -92,7 +95,6 @@ def summarize_chunks(
             f"### [Chunk {note['chunk_id']:03d}] ({note['start']:.1f}s - {note['end']:.1f}s)\n{points_str}"
         )
 
-    # 全片總結 Synthesis
     combined_notes = "\n\n".join(all_points_text)
     synthesis_prompt = f"【主題】: {topic}\n\n【各分段重點彙整】:\n{combined_notes}"
 

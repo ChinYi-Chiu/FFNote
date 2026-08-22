@@ -1,17 +1,39 @@
 import json
+import re
 import requests
 from pathlib import Path
 from typing import Dict, Any, List
-
 
 # ============================================================
 # Ollama configuration
 # ============================================================
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
+OLLAMA_TAGS_URL = f"{OLLAMA_BASE_URL}/api/tags"
 
-MODEL_NAME = "qwen2.5:32b"
+DEFAULT_FALLBACK_MODEL = "qwen3.5:4b"
 
+def get_ollama_models() -> List[str]:
+    """動態取得 Ollama 目前已下載的模型清單"""
+    try:
+        response = requests.get(OLLAMA_TAGS_URL, timeout=3)
+        response.raise_for_status()
+        data = response.json()
+        models = [model["name"] for model in data.get("models", [])]
+        return models if models else [DEFAULT_FALLBACK_MODEL]
+    except Exception:
+        return [DEFAULT_FALLBACK_MODEL]
+
+def extract_json_from_text(text: str) -> str:
+    """提取文字中的 JSON 部分"""
+    text = re.sub(r"^```json\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^```\s*", "", text, flags=re.MULTILINE)
+    
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        return match.group(0).strip()
+    return text.strip()
 
 # ============================================================
 # System Prompt
@@ -19,46 +41,17 @@ MODEL_NAME = "qwen2.5:32b"
 
 SYSTEM_PROMPT = r"""
 你是一個「技術影片逐字稿校正器」。
-
 你的工作不是重新寫文章，而是修正語音辨識系統產生的逐字稿。
 
 請遵守以下規則：
-
 1. 只修正明顯的語音辨識錯誤、同音字錯誤、專有名詞錯誤。
 2. 保留原本說話者的語氣與句子結構。
 3. 不要新增原文沒有提到的資訊。
-4. 不要刪除原文的重要資訊。
-5. 不要自行總結。
-6. 不要把口語內容改寫成正式文章。
-7. 如果原文其實可能是正確的，不要任意修改。
-8. 對專業術語要特別注意上下文。
-9. 中文技術名詞必須依據上下文判斷，而不能只看單一字詞。
-10. 如果無法確定，寧可保留原文。
-11. 專有名詞優先保守修改；只有當上下文、領域知識與語法三者一致時才修改。若不確定，保留原文。
+4. 保留原意，勿自行總結。
 
-例如：
+你只能輸出純 JSON 格式，不要包含任何 Markdown 標記或開頭說明。
 
-原文：
-「複數可以表示成負數的形式」
-
-如果上下文是在講電路、交流電、相量：
-「負數」可能是 Whisper 將「複數」辨識錯誤。
-
-又例如：
-「共二」
-如果上下文是在講複數、相量、交流電路，
-很可能應該是「共軛」。
-
-但是不要看到「負數」就一律改成「複數」。
-
-請根據上下文判斷。
-
-你只能輸出 JSON。
-不要輸出 Markdown。
-不要輸出 ```json。
-
-JSON 格式：
-
+JSON 格式範例：
 {
   "corrected_text": "校正後文字",
   "changes": [
@@ -69,15 +62,7 @@ JSON 格式：
     }
   ]
 }
-
-如果沒有需要修正：
-
-{
-  "corrected_text": "原文",
-  "changes": []
-}
 """
-
 
 # ============================================================
 # Ollama client
@@ -87,9 +72,8 @@ def call_ollama(
     text: str,
     context: str = "",
     topic: str = "",
+    model_name: str = DEFAULT_FALLBACK_MODEL,
 ) -> Dict[str, Any]:
-
-
 
     user_prompt = f"""
 請校正下面這段 Whisper 語音辨識結果。
@@ -102,56 +86,50 @@ def call_ollama(
 
 【需要校正的逐字稿】
 {text}
-
-請只修正真正可能的辨識錯誤。
-專有名詞優先保守修改；只有當上下文、領域知識與語法三者一致時才修改。若不確定，保留原文。
 """
 
     payload = {
-        "model": MODEL_NAME,
-
+        "model": model_name,
         "messages": [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
         ],
-
         "stream": False,
-
-        "format": "json",
-
         "options": {
             "temperature": 0,
+            "num_predict": 1024,  # 限制最大生成 token，防止無止盡生成
         },
     }
 
     try:
-        # 連線測試改用較短的 connection timeout (例如 3 秒)
+        # 連線與回應 Timeout 改為 (5, 90) 秒，超時會立刻跳過，不會讓整隻程式卡住
         response = requests.post(
-            OLLAMA_URL,
+            OLLAMA_CHAT_URL,
             json=payload,
-            timeout=(3, 600),
+            timeout=(5, 90),
         )
         response.raise_for_status()
         data = response.json()
-        content = data["message"]["content"]
-        return json.loads(content)
+        content = data.get("message", {}).get("content", "")
+        
+        json_str = extract_json_from_text(content)
+        return json.loads(json_str)
 
-    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        # 當 Ollama 未啟動、未安裝或連線失敗時，觸發降級機制
-        warning_msg = "⚠️ 未偵測到運作中的 Ollama 服務，無法執行文字校正與筆記總結。已為您輸出原始 Whisper 逐字稿。"
-        print(f"\n[Warning] {warning_msg} (詳細錯誤: {e})")
-
-        # 回傳原始文本與提示文字 (可依據你原本的 JSON 格式欄位調整 Key 名稱)
+    except requests.exceptions.Timeout:
+        warning_msg = f"⚠️ LLM 回應超時 (>90s)，已自動跳過此 Chunk 寫入原始文本 (模型: {model_name})"
+        print(f"\n[Warning] {warning_msg}")
         return {
             "corrected_text": text,
-            "notes": warning_msg,
-            "status": "ollama_not_available",
+            "changes": [],
+            "status": "ollama_timeout",
+        }
+    except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError, Exception) as e:
+        warning_msg = f"⚠️ LLM 校正未正常回應或 JSON 解析失敗 (模型: {model_name})"
+        print(f"\n[Warning] {warning_msg} | 詳細錯誤: {e}")
+        return {
+            "corrected_text": text,
+            "changes": [],
+            "status": "ollama_error",
         }
 
 # ============================================================
@@ -162,6 +140,7 @@ def correct_chunk(
     chunk: Dict[str, Any],
     context: str = "",
     topic: str = "",
+    model_name: str = DEFAULT_FALLBACK_MODEL,
 ) -> Dict[str, Any]:
 
     original_text = chunk["text"]
@@ -170,19 +149,11 @@ def correct_chunk(
         text=original_text,
         context=context,
         topic=topic,
+        model_name=model_name,
     )
 
-    corrected_text = result.get(
-        "corrected_text",
-        original_text,
-    )
-
-    changes = result.get(
-        "changes",
-        [],
-    )
-
-    # 取得連線狀態，預設為 success
+    corrected_text = result.get("corrected_text", original_text)
+    changes = result.get("changes", [])
     status = result.get("status", "success")
 
     return {
@@ -190,22 +161,12 @@ def correct_chunk(
         "start": chunk["start"],
         "end": chunk["end"],
         "duration": chunk["duration"],
-
         "original_text": original_text,
         "corrected_text": corrected_text,
-
         "changes": changes,
-        "status": status,  # 👈 新增此欄位供上層判斷
-
-        "segment_ids": chunk.get(
-            "segment_ids",
-            [],
-        ),
-
-        "estimated_tokens": chunk.get(
-            "estimated_tokens",
-            0,
-        ),
+        "status": status,
+        "segment_ids": chunk.get("segment_ids", []),
+        "estimated_tokens": chunk.get("estimated_tokens", 0),
     }
 
 # ============================================================
@@ -215,101 +176,37 @@ def correct_chunk(
 def correct_chunks(
     chunks: List[Dict[str, Any]],
     topic: str = "",
+    model_name: str = DEFAULT_FALLBACK_MODEL,
 ) -> List[Dict[str, Any]]:
 
     results = []
-    ollama_available = True  # 標記 Ollama 服務狀態
 
     for i, chunk in enumerate(chunks):
-
-        # ----------------------------------------------------
-        # 若已確定 Ollama 無法連線，直接退回原始資料，不再嘗試 call LLM
-        # ----------------------------------------------------
-        if not ollama_available:
-            results.append({
-                "original_text": chunk.get("text", ""),
-                "corrected_text": chunk.get("text", ""),
-                "changes": [],
-                "status": "ollama_not_available"
-            })
-            continue
-
-        print(
-            f"\n[LLM] "
-            f"Chunk {i + 1}/{len(chunks)}"
-        )
-
-        # ----------------------------------------------------
-        # Context
-        # ----------------------------------------------------
+        print(f"\n[LLM] Chunk {i + 1}/{len(chunks)} (使用模型: {model_name})")
 
         context_parts = []
-
         if i > 0:
-            context_parts.append(
-                "上一個 chunk：\n"
-                + chunks[i - 1]["text"]
-            )
-
+            context_parts.append("上一個 chunk：\n" + chunks[i - 1]["text"])
         if i + 1 < len(chunks):
-            context_parts.append(
-                "下一個 chunk：\n"
-                + chunks[i + 1]["text"]
-            )
+            context_parts.append("下一個 chunk：\n" + chunks[i + 1]["text"])
 
-        context = "\n\n".join(
-            context_parts
-        )
-
-        # ----------------------------------------------------
-        # LLM correction
-        # ----------------------------------------------------
+        context = "\n\n".join(context_parts)
 
         result = correct_chunk(
             chunk,
             context=context,
             topic=topic,
+            model_name=model_name,
         )
-
-        # 檢查是否觸發了降級機制 (Ollama 未啟動/未安裝)
-        if result.get("status") == "ollama_not_available":
-            print("\n[⚠️ 提示] 未偵測到運作中的 Ollama 服務，將跳過後續校正，直接輸出原始逐字稿。")
-            ollama_available = False
 
         results.append(result)
 
-        # ----------------------------------------------------
-        # Display
-        # ----------------------------------------------------
-
-        print(
-            "\n原文："
-        )
-
-        print(
-            result.get("original_text", "")
-        )
-
-        print(
-            "\n校正："
-        )
-
-        print(
-            result.get("corrected_text", "")
-        )
+        print("\n原文：", result.get("original_text", ""))
+        print("\n校正：", result.get("corrected_text", ""))
 
         if result.get("changes"):
-
-            print(
-                "\n修改："
-            )
-
+            print("\n修改：")
             for change in result["changes"]:
-
-                print(
-                    f"  {change.get('original')}"
-                    f" → "
-                    f"{change.get('corrected')}"
-                )
+                print(f"  {change.get('original')} → {change.get('corrected')}")
 
     return results
